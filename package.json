@@ -1,7 +1,7 @@
 {
-  "name": "turkey-chase-8-server",
+  "name": "turkey-chase-9-server",
   "version": "1.0.0",
-  "description": "The one multiplayer server for Turkey Chase 8",
+  "description": "The one multiplayer server for Turkey Chase 9",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "engines": { "node": ">=18" },
