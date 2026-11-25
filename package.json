@@ -1,9 +1,15 @@
 {
-  "name": "turkey-chase-9-server",
+  "name": "turkey-chase-x-server",
   "version": "1.0.0",
-  "description": "The one multiplayer server for Turkey Chase 9",
+  "description": "The one multiplayer server for Turkey Chase X (Turkey Chase 9 can still join)",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" },
-  "dependencies": { "ws": "^8.18.0" }
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
 }

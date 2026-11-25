@@ -1,5 +1,5 @@
 // =====================================================================
-// Turkey Chase 9 — the multiplayer server. There's just ONE: everybody who presses 🌐 Play Server
+// Turkey Chase X — the multiplayer server (Turkey Chase 9 games can still join it). There's just ONE: everybody who presses 🌐 Play Server
 // (website, Windows, Mac or Android) ends up here, in the same world, playing together.
 //
 // The server owns the turkeys, so when a good one spawns it goes to whoever catches it FIRST.
@@ -45,7 +45,7 @@ function rollSpeciesLuck(L) {
 const S = 0.16;
 const FIELD = { x0: 20, x1: 1900 - 20, y0: 20, y1: 1200 - 20 };                  // the farm field
 const FARM = { x0: -25, x1: 2685, y0: -25, y1: 1225 };                             // field + road + shops
-const BORDER = { x0: -3900 / S + 30, x1: 4300 / S - 30, y0: -4000 / S + 30, y1: 4200 / S - 30 }; // the world border
+const BORDER = { x0: -7900 / S + 30, x1: 8300 / S - 30, y0: -8000 / S + 30, y1: 8200 / S - 30 };   // (Turkey Chase X: the 3D world is twice as big) // the world border
 const FARM_TURKEYS = 30, WILD_MAX = 700;
 const SEE = 520 / S;
 // Turkey Chase 9: the 3D world is a grid of square chunks (64 studs = 400 px across, starting at the field's corner).
@@ -111,8 +111,104 @@ function cleanLook(l) {
   const pick = (o) => { const out = {}; if (o && typeof o === 'object') for (const k of Object.keys(o).slice(0, 40)) { const v = o[k]; if (typeof v === 'string' && v.length < 40) out[k] = v; else if (typeof v === 'number' && isFinite(v)) out[k] = v; else if (v === null) out[k] = null; } return out; };
   return { a: pick(l.a), c: pick(l.c) };
 }
-const PIC_KINDS = ['chest', 'face', 'full', 'pants'], PIC_MAX = 80000, PIC_RE = /^data:image\/(png|webp|jpeg);base64,[A-Za-z0-9+\/=]+$/;
+const PIC_KINDS = ['chest', 'face', 'full', 'pants', 'skirt'], PIC_MAX = 120000, TC9_SPECIES = 50, PIC_RE = /^data:image\/(png|webp|jpeg);base64,[A-Za-z0-9+\/=]+$/;
 const send = (ws, o) => { if (ws.readyState === 1) ws.send(JSON.stringify(o)); };
+const everyone10 = (o, except) => { const s = JSON.stringify(o); for (const p of players.values()) if (p.ready && p.x10 && p !== except && p.ws.readyState === 1) p.ws.send(s); };
+// ---------- 3D model avatars (Turkey Chase X) ----------
+// The game packs your 3D model into a small .glb, squashes it, and sends it in pieces (60,000 characters each, at most
+// 40). The server keeps it while you're on and passes each piece to the other players — and sends the whole thing to
+// anybody who joins later, a few pieces at a time so it doesn't hog the connection.
+const MDL_CHUNK = 64000, MDL_MAX = 40, MDL_RE = /^[A-Za-z0-9+\/=]+$/;
+function mdlIn(p, m) {
+  if (!p.x10) return;
+  const h = typeof m.h === 'string' ? m.h.slice(0, 40) : '', n = m.n | 0;
+  if (!h || n <= 0) { if (p.mdl) { p.mdl = null; everyone10({ t: 'mdl', id: p.id, h: '', n: 0 }, p); } return; }
+  if (n > MDL_MAX) return;
+  const i = m.i | 0, d = typeof m.d === 'string' ? m.d : '';
+  if (i < 0 || i >= n || !d || d.length > MDL_CHUNK || !MDL_RE.test(d)) return;
+  if (!p.mdl || p.mdl.h !== h) p.mdl = { h, n, z: m.z === 'g' ? 'g' : 'r', parts: [], turn: (m.turn | 0) & 3, tip: (m.tip | 0) & 3 };
+  const M = p.mdl; if (M.n !== n) return;
+  M.parts[i] = d;
+  everyone10({ t: 'mdl', id: p.id, h, n, i, z: M.z, d, turn: M.turn, tip: M.tip }, p);
+}
+function mdlQueueAll(to, from) {
+  const M = from.mdl; if (!M) return;
+  to.outq = to.outq || [];
+  for (let i = 0; i < M.n; i++) if (M.parts[i]) to.outq.push({ t: 'mdl', id: from.id, h: M.h, n: M.n, i, z: M.z, d: M.parts[i], turn: M.turn, tip: M.tip });
+}
+setInterval(() => {   // (the queued pieces for new players: up to 4 every 100 ms each, if their connection keeps up)
+  for (const p of players.values()) if (p.outq && p.outq.length) for (let k = 0; k < 4 && p.outq.length && p.ws.bufferedAmount < 1000000; k++) { const o = p.outq.shift(); if (players.has(o.id)) send(p.ws, o); }
+}, 100);
+// ---------- logs (Turkey Chase X): placed like Minecraft blocks, gone 5 minutes after they're placed ----------
+const BLK_LIFE = 5 * 60000, BLK_CAP = 3000, BLK_MINE = 400, CHOP_LIFE = 3 * 60000, CHOP_CAP = 5000;
+const blocks = new Map(), chops = new Map();
+const okInt = (v, lim) => Number.isInteger(v) && Math.abs(v) <= lim;
+function blkIn(p, m) {
+  if (!p.x10) return;
+  const i = m.i, j = m.j, l = m.l; if (!okInt(i, 5000) || !okInt(j, 5000) || !okInt(l, 1000000)) return;
+  const k = i + ',' + j + ',' + l;
+  if (m.a === 'put') {
+    if (blocks.has(k) || blocks.size >= BLK_CAP) return;
+    let mine = 0; for (const b of blocks.values()) if (b.by === p.id) mine++;
+    if (mine >= BLK_MINE) return;
+    blocks.set(k, { i, j, l, by: p.id, exp: Date.now() + BLK_LIFE });
+    everyone10({ t: 'blk', a: 'put', i, j, l, left: BLK_LIFE }, p);
+  } else if (m.a === 'del') {
+    if (!blocks.delete(k)) return;
+    everyone10({ t: 'blk', a: 'del', i, j, l }, p);
+  }
+}
+// trees chopped down with the axe (they grow back after 3 minutes)
+function chopIn(p, m) {
+  if (!p.x10 || !okInt(m.x, 1000000) || !okInt(m.z, 1000000)) return;
+  const k = m.x + ',' + m.z; if (chops.has(k)) return;
+  if (chops.size >= CHOP_CAP) chops.delete(chops.keys().next().value);
+  chops.set(k, Date.now() + CHOP_LIFE);
+  everyone10({ t: 'chop', x: m.x, z: m.z }, p);
+}
+// the baseball bat doesn't hurt: it flings the other player (when PvP is on)
+function flingIn(p, m) {
+  const now = Date.now(), v = players.get(m.to);
+  if (!pvpOn || !p.x10 || !v || !v.ready || !v.x10 || v === p) return;
+  if (now - (p.flingAt || 0) < 250) return;
+  if (safeZone(p) || safeZone(v)) return;
+  if (now < p.deadUntil || now < v.deadUntil || now < v.prot) return;
+  if (Math.hypot(v.x - p.x, v.y - p.y) > 82 + 150) return;   // (the bat only reaches so far)
+  p.flingAt = now; p.prot = 0;
+  let dx = Number(m.dx) || 0, dy = Number(m.dy) || 0; const l = Math.hypot(dx, dy) || 1;
+  send(v.ws, { t: 'flung', dx: Math.round(dx / l * 1000) / 1000, dy: Math.round(dy / l * 1000) / 1000, by: p.id, bn: p.name });
+}
+setInterval(() => { const now = Date.now(); for (const [k, b] of blocks) if (now >= b.exp) blocks.delete(k); for (const [k, t] of chops) if (now >= t) chops.delete(k); }, 5000);
+// ---------- bags (Turkey Chase X): when you die, everything in your hotbar drops in a bag that anybody can pick up ----------
+const BAG_LIFE = 5 * 60000, BAG_CAP = 300, BAG_TYPES = ['gun', 'food', 'weapon', 'trap', 'block', 'armor'], BAG_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const bags = new Map(); let bagN = 0;
+const bagPub = (b, now) => ({ id: b.id, x: b.x, y: b.y, z: b.z, r: b.r, it: b.it, by: b.by, left: Math.max(0, b.exp - now) });
+function bagIn(p, m) {
+  const now = Date.now();
+  if (!p.x10 || now - (p.bagAt || 0) < 2000) return;
+  const fin = (v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) < 1e6;
+  if (!fin(m.x) || !fin(m.y) || !(m.z === null || fin(m.z)) || !['', 'heaven', 'hell'].includes(m.r)) return;
+  const it = [];
+  for (const o of Array.isArray(m.it) ? m.it.slice(0, 40) : []) {
+    if (!o || !BAG_TYPES.includes(o.t) || typeof o.id !== 'string' || !BAG_ID.test(o.id) || !Number.isInteger(o.n) || o.n < 1 || o.n > 1000000) continue;
+    it.push({ t: o.t, id: o.id, n: o.n });
+  }
+  if (!it.length) return;
+  p.bagAt = now;
+  if (bags.size >= BAG_CAP) bags.delete(bags.keys().next().value);
+  const b = { id: 'B' + (++bagN), x: Math.round(m.x), y: Math.round(m.y), z: m.z === null ? null : Math.round(m.z * 100) / 100, r: m.r, it, by: p.name, exp: now + BAG_LIFE };
+  bags.set(b.id, b);
+  everyone10({ t: 'bagadd', b: bagPub(b, now) });
+}
+function bagTake(p, m) {
+  const b = bags.get(m.id);
+  if (!p.x10 || !b) return;
+  if (Number.isFinite(p.x) && Math.hypot(b.x - p.x, b.y - p.y) > 600) return;   // (you have to be there)
+  bags.delete(b.id);
+  send(p.ws, { t: 'bagyou', id: b.id, it: b.it });
+  everyone10({ t: 'baggone', id: b.id }, p);
+}
+setInterval(() => { const now = Date.now(); for (const [k, b] of bags) if (now >= b.exp) bags.delete(k); }, 5000);
 const everyone = (o, except) => { const s = JSON.stringify(o); for (const p of players.values()) if (p.ready && p !== except && p.ws.readyState === 1) p.ws.send(s); };
 
 // ---------- weather (mostly sunny or normal) ----------
@@ -127,7 +223,7 @@ function weatherTick() {
 
 // ---------- signed Admin-app actions (spawn a turkey, change the weather) — run for everyone ----------
 async function handleAdmin(p, m) {
-  const k = String(m.k || ''); if (!['spawn', 'wx', 'filter', 'pvp'].includes(k)) return;
+  const k = String(m.k || ''); if (!['spawn', 'wx', 'filter', 'pvp', 'reset', 'del', 'music'].includes(k)) return;
   const ts = Number(m.ts) || 0, nonce = String(m.nonce || '');
   if (!nonce || Math.abs(Date.now() - ts) > 60000) return;              // stale or missing
   const key = k + '|' + nonce; if (adminSeen.has(key)) return;          // no replays
@@ -142,8 +238,11 @@ async function handleAdmin(p, m) {
     const farm = inFarm(x, y);   // spawned in the Main Field: it stays in the field. Anywhere else: that chunk is its home
     if (farm) { x = Math.max(FIELD.x0, Math.min(FIELD.x1, x)); y = Math.max(FIELD.y0, Math.min(FIELD.y1, y)); }
     else if (farmDist(x, y) < 40) { const c = [[FARM.x0 - 45, y], [FARM.x1 + 45, y], [x, FARM.y0 - 45], [x, FARM.y1 + 45]].sort((a, b) => Math.hypot(a[0] - x, a[1] - y) - Math.hypot(b[0] - x, b[1] - y))[0]; x = c[0]; y = c[1]; }
-    const t = { id: nextTurkey++, x, y, sp, dx: 0, dy: 0, wander: 20 + Math.random() * 20, flee: false, farm, admin: true, hx: chunkOf(x), hy: chunkOf(y) };
+    const t = { id: nextTurkey++, x, y, sp, dx: 0, dy: 0, wander: 20 + Math.random() * 20, flee: false, farm, admin: true, spawned: true, hx: chunkOf(x), hy: chunkOf(y) };   // (spawned: an admin can delete them, and they don't come back when caught)
     turkeys.set(t.id, t);   // it shows up in everyone's next state update and whoever gets there first catches it
+  } else if (k === 'music') { adminMusic(p, d);
+  } else if (k === 'del') { adminDel(p, d);
+  } else if (k === 'reset') { adminReset(p);
   } else if (k === 'pvp') {
     setPvp(!!d.on);
     everyone({ t: 'sys', m: pvpOn ? '⚔️ An admin turned PvP ON — guns and traps hurt players again!' : '🕊️ An admin turned PvP OFF — nobody can hurt anybody now' });
@@ -157,6 +256,66 @@ async function handleAdmin(p, m) {
     else if (['sunny', 'normal', 'cloudy', 'rain', 'storm', 'snow', 'fog'].includes(id)) { weather = id; weatherUntil = Date.now() + 10 * 60000; everyone({ t: 'wx', id: weather }); }
   }
 }
+
+// ---------- admin: delete turkeys, and reset the whole server (Turkey Chase X) ----------
+// A reset wipes the progress of everybody who's on the server right now. Server save codes still work afterwards:
+// anybody who loads one (or joins with one) gets that progress back.
+function farmRefill() { let n = 0; for (const t of turkeys.values()) if (t.farm && !t.spawned) n++; while (n++ < FARM_TURKEYS) addTurkey(...farmSpot(), true); }
+function adminDel(p, d) {
+  const n = d.n === 'all' ? Infinity : Math.floor(Number(d.n) || 0); if (!(n > 0)) return;
+  const sp = Number.isInteger(d.sp) && d.sp >= 0 ? d.sp : -1, every = d.every === true;   // (every: the normal turkeys too — they come back by themselves)
+  let list = [...turkeys.values()].filter(t => (every || t.spawned) && (sp < 0 || t.sp === sp));
+  if (n < list.length) { list.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y)); list = list.slice(0, n); }
+  for (const t of list) turkeys.delete(t.id);
+  if (every) { farmRefill(); chunkPop.clear(); }
+  send(p.ws, { t: 'deldone', n: list.length });
+  if (list.length) everyone({ t: 'sys', m: '🗑️ An admin removed ' + list.length.toLocaleString('en-US') + (every ? '' : ' spawned') + ' turkey' + (list.length === 1 ? '' : 's') }, p);
+}
+function adminReset(p) {
+  for (const [id, t] of turkeys) if (t.spawned || !t.farm) turkeys.delete(id);   // (the wild ones come back by themselves)
+  farmRefill(); chunkPop.clear();
+  blocks.clear(); chops.clear(); bags.clear();
+  for (const t of [...traps.values()]) trapGone(t);
+  for (const q of players.values()) { q.kills = 0; q.deaths = 0; q.caught = 0; q.hp = 100; q.armor = 0; q.armorId = ''; q.deadUntil = 0; q.stunUntil = 0; }
+  weather = 'normal'; weatherUntil = Date.now() + 180000; everyone({ t: 'wx', id: weather });
+  everyone({ t: 'srvreset', by: p.name });
+}
+
+// ---------- server music (Turkey Chase X) ----------
+// The admin picks a song in the Music settings: the Admin app signs a message saying which song it is (its SHA-256),
+// then sends it in pieces. When every piece is here and it matches, everybody on the server gets it and hears it
+// (players who join later get it too). The admin can turn it off again. It goes when the server is empty.
+const MUS_CHUNK = 96000, MUS_MAX = 150, MUS_RE = /^[A-Za-z0-9+\/=]+$/;
+let music = null, musUp = null;
+function adminMusic(p, d) {
+  if (d.off) { music = null; musUp = null; for (const q of players.values()) q.musq = null; everyone10({ t: 'musoff', by: p.name }); return; }
+  const n = d.n | 0, h = String(d.h || ''), name = String(d.name || 'song').replace(/[\u0000-\u001f]/g, '').slice(0, 80), mime = String(d.mime || '');
+  if (!p.x10 || n < 1 || n > MUS_MAX || !/^[0-9a-f]{64}$/.test(h) || !/^audio\/[a-z0-9.+-]{1,40}$/i.test(mime)) return;
+  musUp = { by: p.id, h, n, name, mime, parts: new Array(n), got: 0, t: Date.now() };
+  send(p.ws, { t: 'musgo', h });   // (go ahead: send the pieces)
+}
+function musIn(p, m) {
+  const U = musUp; if (!U || U.by !== p.id || m.h !== U.h) return;
+  const i = m.i | 0, d = typeof m.d === 'string' ? m.d : '';
+  if (i < 0 || i >= U.n || !d || d.length > MUS_CHUNK || !MUS_RE.test(d)) return;
+  if (!U.parts[i]) U.got++;
+  U.parts[i] = d;
+  if (U.got < U.n) return;
+  musUp = null;
+  if (nodeCrypto.createHash('sha256').update(U.parts.join('')).digest('hex') !== U.h) return;   // (not the song the admin signed for)
+  music = { h: U.h, n: U.n, name: U.name, mime: U.mime, parts: U.parts, by: p.name };
+  for (const q of players.values()) if (q.ready && q.x10 && q !== p) musQueue(q);
+  everyone({ t: 'sys', m: '🎵 ' + p.name + ' (an admin) is playing "' + music.name + '" for everyone' });
+}
+function musQueue(q) {
+  if (!music) return;
+  q.musq = [{ t: 'musstart', h: music.h, n: music.n, name: music.name, mime: music.mime, by: music.by }];
+  for (let i = 0; i < music.n; i++) q.musq.push({ t: 'mus', h: music.h, i, d: music.parts[i] });
+}
+setInterval(() => {   // (the song goes out a few pieces at a time, so it doesn't hog anybody's connection)
+  for (const q of players.values()) if (q.musq && q.musq.length) for (let k = 0; k < 3 && q.musq.length && q.ws.bufferedAmount < 1000000; k++) send(q.ws, q.musq.shift());
+  if (musUp && Date.now() - musUp.t > 120000) musUp = null;   // (an upload that never finished)
+}, 100);
 
 // ---------- the game loop ----------
 let tick = 0;
@@ -305,7 +464,9 @@ function wildTurkeys() {
 // with 3 seconds of spawn protection.
 const PVP_W = {   // [most damage one hit can do, how far away (px) it can reach]
   pistol: [25, 600], smg: [9, 520], shotgun: [70, 420], rifle: [14, 780], sniper: [100, 1950], minigun: [5, 620],
-  rocket: [80, 1250], bomb: [70, 900], nuke: [100, 2800] };
+  rocket: [80, 1250], bomb: [70, 900], nuke: [100, 2800],
+  // Turkey Chase X: melee weapons (up close)
+  dagger: [18, 200], axe: [35, 220], sword: [30, 240], spear: [32, 320], mace: [45, 260], katana: [28, 240], scythe: [40, 280] };
 const TRAP_DEFS = {
   banana: { kind: 'stun', secs: 2, r: 26 }, slime: { kind: 'puddle', slow: 0.35, r: 70, life: 20 }, ball: { kind: 'throw', slow: 0.4, secs: 6 },
   bear: { kind: 'stun', secs: 4, r: 26 }, net: { kind: 'stun', secs: 7, r: 32 }, pool: { kind: 'puddle', slow: 0.25, r: 160, life: 30 }, cage: { kind: 'stun', secs: 12, r: 34 } };
@@ -446,7 +607,7 @@ function sendState() {
   const pl = ps.map(p => [p.id, Math.round(p.x), Math.round(p.y), Math.round(p.z * 10) / 10, Math.round(p.f * 100) / 100, p.m, p.j, p.e, p.ping, p.caught, Math.max(0, p.hp), p.kills, p.deaths, pvpStatus(p, now), now < p.prot ? 1 : 0, p.armor, p.armor > 0 && !p.armorHidden ? p.armorId : '', safeZone(p)]);   // (+ armour you can see, and safe zone)   // (+ ping and turkeys caught for the Tab list, and health / kills / deaths / trapped-or-dead / spawn protection for PvP)
   for (const p of ps) {
     const tk = [];
-    for (const t of turkeys.values()) if (Math.abs(t.x - p.x) < SEE && Math.abs(t.y - p.y) < SEE) tk.push(t.mu ? [t.id, Math.round(t.x), Math.round(t.y), t.sp, t.mu] : [t.id, Math.round(t.x), Math.round(t.y), t.sp]);
+    for (const t of turkeys.values()) if (Math.abs(t.x - p.x) < SEE && Math.abs(t.y - p.y) < SEE && (p.x10 || t.sp < TC9_SPECIES)) tk.push(t.mu ? [t.id, Math.round(t.x), Math.round(t.y), t.sp, t.mu] : [t.id, Math.round(t.x), Math.round(t.y), t.sp]);
     send(p.ws, { t: 'st', pl, tk, n: ps.length });
   }
 }
@@ -460,27 +621,29 @@ setInterval(() => {
 // ---------- connections ----------
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
-  res.end('Turkey Chase 9 server is running. Players online: ' + [...players.values()].filter(p => p.ready).length + '\n');
+  res.end('Turkey Chase X server is running. Players online: ' + [...players.values()].filter(p => p.ready).length + '\n');
 });
-const wss = new WebSocketServer({ server, maxPayload: 96 * 1024 });
+const wss = new WebSocketServer({ server, maxPayload: 192 * 1024 });
 wss.on('connection', (ws, req) => {
   if (players.size >= MAX_PLAYERS) { send(ws, { t: 'full' }); ws.close(); return; }
   const p = { id: nextPlayer++, ws, ready: false, name: '', x: 950, y: 600, z: 0, f: 0, m: 0, j: 0, e: '', look: null, alive: true, chatTokens: 3, chatAt: Date.now(), msgs: 0, lastCatch: 0, ip: ipOf(req), ping: -1, caught: 0, pics: {}, picAt: {}, hp: 100, armor: 0, armorId: '', armorHidden: false, sl: 1, rl: 1, kills: 0, deaths: 0, deadUntil: 0, prot: 0, stunUntil: 0, stunId: '', dmgT: 0, dmgN: 0 };
   players.set(p.id, p);
   ws.on('pong', () => { p.alive = true; });
   ws.on('message', (raw) => {
-    if (++p.msgs > 60) return; // (spam guard; reset every second)
+    if (++p.msgs > 80) return; // (spam guard; reset every second)
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
     if (!m || typeof m !== 'object') return;
     if (m.t === 'hello' && !p.ready) {
       const name = cleanName(m.name);
       if (!name) { send(ws, { t: 'badname' }); return; }
-      p.name = name; p.look = cleanLook(m.look); p.ready = true;
+      p.name = name; p.look = cleanLook(m.look); p.ready = true; p.x10 = Number(m.ver) >= 10;   // (Turkey Chase X: new turkeys + 3D models)
       p.prot = Date.now() + 3000;
-      send(ws, { t: 'welcome', id: p.id, name, weather, filter: chatFilter, pvp: pvpOn, traps: [...traps.values()].map(trapOut), players: [...players.values()].filter(q => q.ready).map(q => ({ id: q.id, name: q.name, look: q.look })) });
+      send(ws, { t: 'welcome', x: 1, id: p.id, name, weather, filter: chatFilter, pvp: pvpOn, traps: [...traps.values()].map(trapOut), players: [...players.values()].filter(q => q.ready).map(q => ({ id: q.id, name: q.name, look: q.look })) });
       everyone({ t: 'join', id: p.id, name, look: p.look }, p);
       // everyone's avatar pictures (chest / face / whole avatar / pants), so the new player sees them too
       for (const q of players.values()) if (q.ready && q !== p) for (const k of PIC_KINDS) if (q.pics[k]) send(ws, { t: 'pic', id: q.id, k, d: q.pics[k] });
+      if (p.x10) for (const q of players.values()) if (q.ready && q !== p) mdlQueueAll(p, q);
+      if (p.x10) { const now = Date.now(); send(ws, { t: 'blks', l: [...blocks.values()].map(b => [b.i, b.j, b.l, Math.max(0, b.exp - now)]) }); send(ws, { t: 'chops', l: [...chops].map(([k, t]) => k.split(',').map(Number).concat(Math.max(0, t - now))) }); send(ws, { t: 'bags', l: [...bags.values()].map(b => bagPub(b, now)) }); if (music) musQueue(p); }
       return;
     }
     if (!p.ready) return;
@@ -494,6 +657,12 @@ wss.on('connection', (ws, req) => {
     if (m.t === 'srvload') { srvLoad(p, m); return; }
     if (m.t === 'rename') { srvRename(p, m); return; }
     if (m.t === 'hit') { pvpHit(p, m); return; }
+    if (m.t === 'blk') { blkIn(p, m); return; }
+    if (m.t === 'chop') { chopIn(p, m); return; }
+    if (m.t === 'fling') { flingIn(p, m); return; }
+    if (m.t === 'bag') { bagIn(p, m); return; }
+    if (m.t === 'bagtake') { bagTake(p, m); return; }
+    if (m.t === 'mus') { musIn(p, m); return; }
     if (m.t === 'trap') { pvpTrap(p, m); return; }
     if (m.t === 'trip') { pvpTrip(p, m); return; }
     if (m.t === 'armor') { pvpArmor(p, m); return; }
@@ -503,9 +672,22 @@ wss.on('connection', (ws, req) => {
       const k = String(m.k || ''); if (!PIC_KINDS.includes(k)) return;
       const d = typeof m.d === 'string' ? m.d : '';
       if (d && (d.length > PIC_MAX || !PIC_RE.test(d))) return;
-      const now = Date.now(); if (now - (p.picAt[k] || 0) < 1000) return; p.picAt[k] = now;
       if (d) p.pics[k] = d; else delete p.pics[k];
-      everyone({ t: 'pic', id: p.id, k, d }, p);
+      if (p.x10) send(ws, { t: 'picok', k });
+      p.picTimer = p.picTimer || {};
+      const now = Date.now(), wait = 1000 - (now - (p.picAt[k] || 0));
+      if (wait <= 0) { p.picAt[k] = now; everyone({ t: 'pic', id: p.id, k, d }, p); }
+      else if (!p.picTimer[k]) p.picTimer[k] = setTimeout(() => {   // (two in a row: the newest one goes out in a moment)
+        p.picTimer[k] = 0; if (!players.has(p.id)) return;
+        p.picAt[k] = Date.now(); everyone({ t: 'pic', id: p.id, k, d: p.pics[k] || '' }, p);
+      }, wait);
+      return;
+    }
+    if (m.t === 'mdl') { mdlIn(p, m); return; }
+    if (m.t === 'mdlm') {   // ↻ Turn / ⤵ Tip over on a 3D model
+      if (!p.mdl) return;
+      p.mdl.turn = (m.turn | 0) & 3; p.mdl.tip = (m.tip | 0) & 3;
+      everyone10({ t: 'mdlm', id: p.id, turn: p.mdl.turn, tip: p.mdl.tip }, p);
       return;
     }
     if (m.t === 'pos') {
@@ -528,7 +710,8 @@ wss.on('connection', (ws, req) => {
       if (Math.hypot(t.x - p.x, t.y - p.y) > reach) return;
       turkeys.delete(t.id); p.caught++;
       everyone({ t: 'caught', id: t.id, by: p.id, sp: t.sp, n: p.name, mu: t.mu || '' });
-      if (t.farm) addTurkey(...farmSpot(), true);   // a new one straight away: in the field for a field turkey,
+      if (t.spawned) {}                            // (Turkey Chase X: a spawned one doesn't come back)
+      else if (t.farm) addTurkey(...farmSpot(), true);   // a new one straight away: in the field for a field turkey,
       else respawnNear(t);                          // or in the same chunk / one next to it for a wild one
     } else if (m.t === 'tp') {
       // relay a teleport message to one specific player. The clients work out what it means and who moves;
@@ -542,9 +725,9 @@ wss.on('connection', (ws, req) => {
       handleAdmin(p, m);   // a signed Admin-app action (runs for everyone)
     }
   });
-  ws.on('close', () => { players.delete(p.id); if (p.ready) everyone({ t: 'leave', id: p.id, name: p.name }); if (![...players.values()].some(q => q.ready)) { chatFilter = true; pvpOn = true; } });   // (empty server: filter back on)
+  ws.on('close', () => { players.delete(p.id); for (const k in (p.picTimer || {})) clearTimeout(p.picTimer[k]); p.mdl = null; p.outq = null; if (p.ready) everyone({ t: 'leave', id: p.id, name: p.name }); if (![...players.values()].some(q => q.ready)) { chatFilter = true; pvpOn = true; music = null; musUp = null; } p.musq = null; });   // (empty server: filter back on)
   ws.on('error', () => {});
 });
 setInterval(() => { for (const p of players.values()) p.msgs = 0; }, 1000);
 setInterval(() => { for (const p of players.values()) { if (!p.alive) { p.ws.terminate(); continue; } p.alive = false; try { p.ws.ping(); } catch (e) {} } }, 20000);
-server.listen(PORT, () => console.log('Turkey Chase 9 server listening on port ' + PORT));
+server.listen(PORT, () => console.log('Turkey Chase X server listening on port ' + PORT));

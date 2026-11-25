@@ -1,8 +1,8 @@
-# Turkey Chase 9 — multiplayer server
+# Turkey Chase X — multiplayer server
 
-This is the one server that every copy of Turkey Chase 9 (website, Windows, Mac, Android) connects to
+This is the one server that every copy of Turkey Chase X (and Turkey Chase 9: website, Windows, Mac, Android) connects to
 when someone presses **🌐 Play Server**. It runs the shared turkeys (first to catch one gets it),
-the weather, the chat (with a filter and spam limits) and PvP. It doesn't store anyone's progress itself:
+the weather, the chat (with a filter and spam limits), PvP, and everyone's avatar pictures and 3D model avatars. It doesn't store anyone's progress itself:
 instead it hands each player a **server save code** locked with a secret key only the server has
 (`SAVE_KEY`), and opens it again when they come back.
 
@@ -23,7 +23,7 @@ connect with `wss://`), because the website and the apps all run on secure pages
    Keep it private (never put it in the GitHub repo), and never change it — if it changes, every old
    server save code stops working. Without it the server runs fine, but server progress isn't saved.
 5. Press **Create Web Service**. When it says *Live*, open the address it gives you
-   (like `https://your-name.onrender.com`). You should see *"Turkey Chase 9 server is running."*
+   (like `https://your-name.onrender.com`). You should see *"Turkey Chase X server is running."*
 6. Send that address to Claude, and every version of the game gets rebuilt to connect to it
    (as `wss://your-name.onrender.com`).
 
@@ -51,3 +51,16 @@ Open the server's address in a browser: it says how many players are online.
 This version adds one tiny thing on top of the Turkey Chase 8 server: it passes **teleport requests**
 (`/tpa`, `/tphere`, `/tpaccept`, `/tpdeny`) along to the one player they're meant for. Nothing else changed,
 and no player data is stored. **Redeploy this folder** (or push it to your repo) so teleporting works.
+
+## New in the Turkey Chase X server
+
+- **10 new turkeys** (Toxic up to Paradox), and the Rainbow Turkey is rarer. The new kinds go on the end of
+  `species.json`, so the turkey numbers Turkey Chase 9 uses still mean the same thing. Turkey Chase 9 games
+  can still join; they just don't get sent the new kinds (they wouldn't know what they are).
+- **Pictures are never lost**: a picture that comes in less than a second after the last one is kept and passed
+  on a moment later (before, it was thrown away), and Turkey Chase X games get a "got it" back for each one.
+- **3D model avatars**: Turkey Chase X sends your 3D model in pieces (at most 40 pieces of 64,000 characters).
+  The server keeps it while you're on, passes each piece to the other Turkey Chase X players, and sends the whole
+  model to anyone who joins later. It's forgotten when you leave.
+- **Melee weapons** (Dagger, Baseball Bat, Axe, Sword, Spear, Mace, Katana, Scythe) can hurt other players when PvP is on. The
+  server checks each hit like it does for guns: the most damage that weapon can do, and that you're close enough.
